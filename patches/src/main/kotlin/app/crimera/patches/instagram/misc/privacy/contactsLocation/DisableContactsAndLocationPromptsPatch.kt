@@ -14,6 +14,7 @@ import org.w3c.dom.Element
 
 /**
  * Manifest patch to strip contacts and location permissions and disable background location/contact services.
+ * Note: ACCESS_MEDIA_LOCATION is deliberately preserved so Android 13+ Photo/Video pickers work without errors.
  */
 val disableContactsAndLocationManifestPatch =
     resourcePatch(
@@ -36,7 +37,6 @@ val disableContactsAndLocationManifestPatch =
                         "android.permission.ACCESS_FINE_LOCATION",
                         "android.permission.ACCESS_COARSE_LOCATION",
                         "android.permission.ACCESS_BACKGROUND_LOCATION",
-                        "android.permission.ACCESS_MEDIA_LOCATION",
                         "android.permission.FOREGROUND_SERVICE_LOCATION",
                     )
 
@@ -87,7 +87,7 @@ val disableContactsAndLocationManifestPatch =
  * 2. Neutralizes CCUPluginImpl.initScheduler -> returns void.
  * 3. Short-circuits isContactsSyncAllowed check: LX/7od;->A00 -> returns false.
  * 4. Short-circuits location permission check: LX/4AJ;->A00 -> returns false.
- * 5. Suppresses NUX and in-app upsell dialog fragments for contacts and location (LX/DOZ;, LX/DPJ;, LX/Dxb;).
+ * 5. Suppresses device contacts background worker callbacks (DeviceContactsUpdaterAsync).
  */
 @Suppress("unused")
 val disableContactsAndLocationPromptsPatch =
@@ -146,16 +146,6 @@ val disableContactsAndLocationPromptsPatch =
                     if (method.returnType == "V") {
                         method.addInstructions(0, "return-void")
                     }
-                }
-            }
-
-            // 6. Suppress contact/location permission prompt fragments (quick_permissions / sac_quick_permissions / location_services)
-            listOf("LX/DOZ;", "LX/DPJ;", "LX/Dxb;").forEach { className ->
-                mutableClassDefByOrNull(className)?.let { cls ->
-                    cls.methods.find { it.implementation != null && it.name == "onResume" }?.addInstructions(
-                        0,
-                        "return-void",
-                    )
                 }
             }
         }
