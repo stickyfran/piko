@@ -7,10 +7,32 @@
 package app.crimera.patches.instagram.misc.privacy.contactsLocation
 
 import app.crimera.patches.instagram.utils.Constants.COMPATIBILITY_INSTAGRAM
+import app.crimera.patches.instagram.utils.Constants.LINKS_DESCRIPTOR
+import app.crimera.patches.instagram.utils.fieldReference
+import app.morphe.patcher.Fingerprint
 import app.morphe.patcher.extensions.InstructionExtensions.addInstructions
+import app.morphe.patcher.extensions.InstructionExtensions.addInstructionsWithLabels
+import app.morphe.patcher.extensions.InstructionExtensions.getInstruction
+import app.morphe.patcher.fieldAccess
 import app.morphe.patcher.patch.bytecodePatch
 import app.morphe.patcher.patch.resourcePatch
+import app.morphe.patcher.util.smali.ExternalLabel
+import com.android.tools.smali.dexlib2.Opcode
 import org.w3c.dom.Element
+
+private object IgBloksFullScreenOpenFingerprint : Fingerprint(
+    returnType = "V",
+    parameters =
+        listOf(
+            "Landroid/content/Context;",
+            "Lcom/instagram/bloks/hosting/IgBloksScreenConfig;",
+        ),
+    strings = listOf("BKDataFetcher.fetch"),
+    filters = listOf(
+        // App id of the opened screen.
+        fieldAccess(definingClass = "this", type = "Ljava/lang/String;", opcode = Opcode.IGET_OBJECT),
+    ),
+)
 
 /**
  * Manifest patch to strip contacts and location permissions and disable background location/contact services.
@@ -82,12 +104,16 @@ val disableContactsAndLocationManifestPatch =
     }
 
 /**
- * Bytecode patch to suppress Contact Sync (CCU) prompts and Location dialogs/upsells:
- * 1. Neutralizes CCU Continuous Contacts Uploader: CCUServiceImpl.onStart -> returns false.
- * 2. Neutralizes CCUPluginImpl.initScheduler -> returns void.
- * 3. Short-circuits isContactsSyncAllowed check: LX/7od;->A00 -> returns false.
- * 4. Short-circuits location permission check: LX/4AJ;->A00 -> returns false.
- * 5. Suppresses device contacts background worker callbacks (DeviceContactsUpdaterAsync).
+ * Bytecode patch to suppress Contact Sync (CCU) prompts, NDX Onboarding screens, and Location dialogs/upsells:
+ * 1. Suppresses NDX (New Device Experience) Bloks onboarding screens:
+ *    - com.bloks.www.bloks.ig.ndx.ci.entry.screen ("Permite el acceso a los contactos...")
+ *    - com.bloks.www.bloks.ig.ndx.ls.entry.screen (Location services prompt)
+ * 2. Neutralizes NDXLauncher launcher methods (A03 -> returns false, A04 -> returns void).
+ * 3. Neutralizes CCU Continuous Contacts Uploader: CCUServiceImpl.onStart -> returns false.
+ * 4. Neutralizes CCUPluginImpl.initScheduler -> returns void.
+ * 5. Short-circuits isContactsSyncAllowed check: LX/7od;->A00 -> returns false.
+ * 6. Short-circuits location permission check: LX/4AJ;->A00 -> returns false.
+ * 7. Suppresses device contacts background worker callbacks (DeviceContactsUpdaterAsync).
  */
 @Suppress("unused")
 val disableContactsAndLocationPromptsPatch =
@@ -100,7 +126,51 @@ val disableContactsAndLocationPromptsPatch =
         dependsOn(disableContactsAndLocationManifestPatch)
 
         execute {
-            // 1. Suppress CCU start (CCUServiceImpl)
+            // 1. Suppress NDX (New Device Experience) Bloks onboarding prompt screens
+            IgBloksFullScreenOpenFingerprint.let {
+                val appIdField = it.instructionMatches.first().fieldReference
+
+                it.method.addInstructionsWithLabels(
+                    0,
+                    """
+                    move-object/from16 v0, p0
+                    iget-object v0, v0, $appIdField
+                    if-nez v0, :piko_not_ndx
+                    const-string v1, "com.bloks.www.bloks.ig.ndx.ci.entry.screen"
+                    invoke-virtual {v0, v1}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
+                    move-result v1
+                    if-eqz v1, :piko_check_ls
+                    return-void
+                    :piko_check_ls
+                    const-string v1, "com.bloks.www.bloks.ig.ndx.ls.entry.screen"
+                    invoke-virtual {v0, v1}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
+                    move-result v1
+                    if-eqz v1, :piko_not_ndx
+                    return-void
+                    """.trimIndent(),
+                    ExternalLabel("piko_not_ndx", it.method.getInstruction(0)),
+                )
+            }
+
+            // 2. Neutralize NDXLauncher
+            mutableClassDefByOrNull("Lcom/instagram/nux/ndx/util/NDXLauncher;")?.let { cls ->
+                cls.methods.filter { it.implementation != null }.forEach { method ->
+                    when (method.name) {
+                        "A03" ->
+                            method.addInstructions(
+                                0,
+                                """
+                                const/4 v0, 0x0
+                                return v0
+                                """.trimIndent(),
+                            )
+                        "A04" ->
+                            method.addInstructions(0, "return-void")
+                    }
+                }
+            }
+
+            // 3. Suppress CCU start (CCUServiceImpl)
             mutableClassDefByOrNull("Lcom/instagram/contacts/ccu/impl/CCUServiceImpl;")?.let { cls ->
                 cls.methods.find { it.implementation != null && it.name == "onStart" }?.addInstructions(
                     0,
@@ -111,14 +181,14 @@ val disableContactsAndLocationPromptsPatch =
                 )
             }
 
-            // 2. Suppress CCU scheduler initialization (CCUPluginImpl)
+            // 4. Suppress CCU scheduler initialization (CCUPluginImpl)
             mutableClassDefByOrNull("Lcom/instagram/contacts/ccu/impl/CCUPluginImpl;")?.let { cls ->
                 cls.methods.filter { it.implementation != null && it.name == "initScheduler" }.forEach { method ->
                     method.addInstructions(0, "return-void")
                 }
             }
 
-            // 3. Short-circuit isContactsSyncAllowed check (LX/7od)
+            // 5. Short-circuit isContactsSyncAllowed check (LX/7od)
             mutableClassDefByOrNull("LX/7od;")?.let { cls ->
                 cls.methods.find { it.implementation != null && it.name == "A00" }?.addInstructions(
                     0,
@@ -129,7 +199,7 @@ val disableContactsAndLocationPromptsPatch =
                 )
             }
 
-            // 4. Short-circuit location permission check (LX/4AJ)
+            // 6. Short-circuit location permission check (LX/4AJ)
             mutableClassDefByOrNull("LX/4AJ;")?.let { cls ->
                 cls.methods.find { it.implementation != null && it.name == "A00" }?.addInstructions(
                     0,
@@ -140,7 +210,7 @@ val disableContactsAndLocationPromptsPatch =
                 )
             }
 
-            // 5. Suppress device contacts updater callbacks (DeviceContactsUpdaterAsync)
+            // 7. Suppress device contacts updater callbacks (DeviceContactsUpdaterAsync)
             mutableClassDefByOrNull("Lcom/facebook/xccu/businesslogic/DeviceContactsUpdaterAsync;")?.let { cls ->
                 cls.methods.filter { it.implementation != null && it.name.startsWith("A0") }.forEach { method ->
                     if (method.returnType == "V") {
