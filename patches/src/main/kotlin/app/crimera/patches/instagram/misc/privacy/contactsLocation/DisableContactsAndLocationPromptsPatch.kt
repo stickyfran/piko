@@ -135,17 +135,21 @@ val disableContactsAndLocationPromptsPatch =
                     """
                     move-object/from16 v0, p0
                     iget-object v0, v0, $appIdField
-                    if-nez v0, :piko_not_ndx
+                    if-eqz v0, :piko_not_ndx
                     const-string v1, "com.bloks.www.bloks.ig.ndx.ci.entry.screen"
                     invoke-virtual {v0, v1}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
                     move-result v1
-                    if-eqz v1, :piko_check_ls
-                    return-void
-                    :piko_check_ls
+                    if-nez v1, :piko_block_ndx
                     const-string v1, "com.bloks.www.bloks.ig.ndx.ls.entry.screen"
                     invoke-virtual {v0, v1}, Ljava/lang/String;->equals(Ljava/lang/Object;)Z
                     move-result v1
-                    if-eqz v1, :piko_not_ndx
+                    if-nez v1, :piko_block_ndx
+                    const-string v1, "bloks.ig.ndx."
+                    invoke-virtual {v0, v1}, Ljava/lang/String;->contains(Ljava/lang/CharSequence;)Z
+                    move-result v1
+                    if-nez v1, :piko_block_ndx
+                    goto :piko_not_ndx
+                    :piko_block_ndx
                     return-void
                     """.trimIndent(),
                     ExternalLabel("piko_not_ndx", it.method.getInstruction(0)),
@@ -154,9 +158,10 @@ val disableContactsAndLocationPromptsPatch =
 
             // 2. Neutralize NDXLauncher
             mutableClassDefByOrNull("Lcom/instagram/nux/ndx/util/NDXLauncher;")?.let { cls ->
-                cls.methods.filter { it.implementation != null }.forEach { method ->
-                    when (method.name) {
-                        "A03" ->
+                cls.methods.filter { it.implementation != null && it.name != "<init>" && it.name != "<clinit>" }.forEach { method ->
+                    when (method.returnType) {
+                        "V" -> method.addInstructions(0, "return-void")
+                        "Z" ->
                             method.addInstructions(
                                 0,
                                 """
@@ -164,13 +169,28 @@ val disableContactsAndLocationPromptsPatch =
                                 return v0
                                 """.trimIndent(),
                             )
-                        "A04" ->
-                            method.addInstructions(0, "return-void")
                     }
                 }
             }
 
-            // 3. Suppress CCU start (CCUServiceImpl)
+            // 3. Neutralize NdxStore
+            mutableClassDefByOrNull("Lcom/instagram/nux/ndx/util/NdxStore;")?.let { cls ->
+                cls.methods.filter { it.implementation != null && it.name != "<init>" && it.name != "<clinit>" }.forEach { method ->
+                    when (method.returnType) {
+                        "V" -> method.addInstructions(0, "return-void")
+                        "Z" ->
+                            method.addInstructions(
+                                0,
+                                """
+                                const/4 v0, 0x0
+                                return v0
+                                """.trimIndent(),
+                            )
+                    }
+                }
+            }
+
+            // 4. Suppress CCU start (CCUServiceImpl)
             mutableClassDefByOrNull("Lcom/instagram/contacts/ccu/impl/CCUServiceImpl;")?.let { cls ->
                 cls.methods.find { it.implementation != null && it.name == "onStart" }?.addInstructions(
                     0,
@@ -181,14 +201,14 @@ val disableContactsAndLocationPromptsPatch =
                 )
             }
 
-            // 4. Suppress CCU scheduler initialization (CCUPluginImpl)
+            // 5. Suppress CCU scheduler initialization (CCUPluginImpl)
             mutableClassDefByOrNull("Lcom/instagram/contacts/ccu/impl/CCUPluginImpl;")?.let { cls ->
                 cls.methods.filter { it.implementation != null && it.name == "initScheduler" }.forEach { method ->
                     method.addInstructions(0, "return-void")
                 }
             }
 
-            // 5. Short-circuit isContactsSyncAllowed check (LX/7od)
+            // 6. Short-circuit isContactsSyncAllowed check (LX/7od)
             mutableClassDefByOrNull("LX/7od;")?.let { cls ->
                 cls.methods.find { it.implementation != null && it.name == "A00" }?.addInstructions(
                     0,
@@ -199,7 +219,7 @@ val disableContactsAndLocationPromptsPatch =
                 )
             }
 
-            // 6. Short-circuit location permission check (LX/4AJ)
+            // 7. Short-circuit location permission check (LX/4AJ)
             mutableClassDefByOrNull("LX/4AJ;")?.let { cls ->
                 cls.methods.find { it.implementation != null && it.name == "A00" }?.addInstructions(
                     0,
@@ -210,7 +230,7 @@ val disableContactsAndLocationPromptsPatch =
                 )
             }
 
-            // 7. Suppress device contacts updater callbacks (DeviceContactsUpdaterAsync)
+            // 8. Suppress device contacts updater callbacks (DeviceContactsUpdaterAsync)
             mutableClassDefByOrNull("Lcom/facebook/xccu/businesslogic/DeviceContactsUpdaterAsync;")?.let { cls ->
                 cls.methods.filter { it.implementation != null && it.name.startsWith("A0") }.forEach { method ->
                     if (method.returnType == "V") {
